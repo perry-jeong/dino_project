@@ -56,8 +56,6 @@
 #define GRAVITY_SEC   72.0f   /* rows/sec² 중력 */
 #define MAX_FALL_SEC 200.0f   /* rows/sec 최대 낙하 속도 */
 #define MAX_HEIGHT     8      /* 화면 밖 점프 방지 상한 (rows) */
-#define COYOTE_MS     80
-#define MAX_AIR_JUMPS  1
 
 
 
@@ -101,8 +99,6 @@ typedef struct {
     float height;          /* DINO_BASE 기준 위로 올라간 rows */
     float vy;              /* 속도 (양수=상승) */
     int   on_ground;
-    int   air_jumps_left;  /* 남은 공중 점프 횟수 */
-    long long last_ground_ms;
 } PhysState;
 
 typedef struct { float x; int y_row, w; float base_speed; } Cloud;
@@ -172,19 +168,14 @@ int hitbox_overlap(HitBox a, HitBox b) {
 
 void phys_init(PhysState *p) {
     p->height = 0.0f; p->vy = 0.0f;
-    p->on_ground = 1; p->air_jumps_left = MAX_AIR_JUMPS;
-    p->last_ground_ms = 0;
+    p->on_ground = 1;
 }
 
 void phys_jump(PhysState *p, long long now_ms) {
-    /* vy 단위: rows/sec — tick 속도와 무관하게 항상 동일한 점프 높이 */
-    if (p->on_ground || (now_ms - p->last_ground_ms < COYOTE_MS)) {
+    /* 오직 지면에 닿아 있을 때만 단일 점프 가능 (이단/삼단 점프 제거) */
+    if (p->on_ground) {
         p->vy = JUMP_VY_SEC;
         p->on_ground = 0;
-        p->air_jumps_left = MAX_AIR_JUMPS;
-    } else if (p->air_jumps_left > 0) {
-        p->vy = JUMP_VY_SEC * 0.82f;
-        p->air_jumps_left--;
     }
 }
 
@@ -200,8 +191,7 @@ void phys_update(PhysState *p, long long now_ms, float dt) {
     }
     if (p->height <= 0.0f) {
         p->height = 0.0f; p->vy = 0.0f;
-        p->on_ground = 1; p->last_ground_ms = now_ms;
-        p->air_jumps_left = MAX_AIR_JUMPS;
+        p->on_ground = 1;
     }
 }
 
