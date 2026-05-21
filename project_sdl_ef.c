@@ -49,12 +49,16 @@
 #define MAX_CLOUDS    5
 #define MAX_STARS    60
 
-/* ── F3: 점프 물리 상수 ─────────────────────────────── */
-#define JUMP_VY_INIT   9.5f
-#define GRAVITY        0.75f
+/* ── F3: 점프 물리 상수 ───────────────────────────────────── */
+/* CD 에디션 jump_map 기준 재현: peak≈6행, 체공≈17틱                */
+/*   VY=1.5, g=0.18 → peak=1.5²/(2×0.18)≈6.25행, air≈17틱      */
+#define JUMP_VY_INIT   1.5f
+#define GRAVITY        0.18f
 #define MAX_FALL       10.0f
+#define MAX_HEIGHT     8       /* 화면 밖 점프 방지 상한 (rows) */
 #define COYOTE_MS      80
 #define MAX_AIR_JUMPS   1
+
 
 /* ── F1: 아이템 ─────────────────────────────────────── */
 #define ITEM_CLEARS    5
@@ -192,6 +196,11 @@ void phys_update(PhysState *p, long long now_ms) {
     p->vy -= GRAVITY;
     if (p->vy < -MAX_FALL) p->vy = -MAX_FALL;
     p->height += p->vy;
+    /* 화면 밖 점프 방지: 상한 클램핑 */
+    if (p->height > (float)MAX_HEIGHT) {
+        p->height = (float)MAX_HEIGHT;
+        p->vy = 0.0f;  /* 천장에 닿는 순간 속도 제거 */
+    }
     if (p->height <= 0.0f) {
         p->height = 0.0f; p->vy = 0.0f;
         p->on_ground = 1; p->last_ground_ms = now_ms;
@@ -634,7 +643,7 @@ int main(int argc, char *argv[]) {
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
                 if (e.type==SDL_QUIT){quit=1;peer_disconnected=1;break;}
-                if (e.type==SDL_KEYDOWN) {
+                if (e.type==SDL_KEYDOWN && e.key.repeat==0) {  /* repeat==0: 키 홀드 무시 */
                     if (e.key.keysym.sym==SDLK_q){quit=1;peer_disconnected=1;break;}
                     if (!my_dead) {
                         /* F3: 점프 (코요테 타임 / 더블점프 포함) */
@@ -820,9 +829,9 @@ int main(int argc, char *argv[]) {
                 int lv=calc_level(tick_interval);
                 char b1[120],b2[80];
 
-                /* 내 정보 (B1: 생존 시간 표시) */
+                /* 내 정보 (B1: 생존 점수 표시) */
                 sprintf(b1,"%s",my_label);
-                sprintf(b2,"LV.%d  %d.%ds",lv,score/10,score%10);
+                sprintf(b2,"LV.%d  %05d",lv,score);
                 draw_text(ren,font,b1,2,1,dc);
                 draw_text(ren,font,b2,WIDTH-20,1,(SDL_Color){(Uint8)gr_c.r,(Uint8)gr_c.g,(Uint8)gr_c.b,255});
 
@@ -837,13 +846,13 @@ int main(int argc, char *argv[]) {
 
                 /* 상대 정보 */
                 sprintf(b1,"%s %s",peer_label,peer.is_dead?"[DEAD]":"");
-                sprintf(b2,"%d.%ds",peer.score/10,peer.score%10);
+                sprintf(b2,"%05d",peer.score);
                 draw_text(ren,font,b1,2,MY_BASE_Y+1,col_op);
                 draw_text(ren,font,b2,WIDTH-10,MY_BASE_Y+1,col_op);
 
                 /* 최고 기록 */
                 if (best_score>0) {
-                    char bs[64]; sprintf(bs,"BEST:%d.%ds",best_score/10,best_score%10);
+                    char bs[64]; sprintf(bs,"BEST:%05d",best_score);
                     draw_text(ren,font,bs,WIDTH-10,2,
                               (SDL_Color){100,100,200,255});
                 }
@@ -916,8 +925,8 @@ int main(int argc, char *argv[]) {
                 draw_text_center(ren,font_large,"==== GAME OVER ====",2,dc);
 
                 char b1[80],b2[80];
-                sprintf(b1,"My Time:   %d.%ds",my_score_final/10,my_score_final%10);
-                sprintf(b2,"Peer Time: %d.%ds",peer_score_final/10,peer_score_final%10);
+                sprintf(b1,"My Score:   %05d",my_score_final);
+                sprintf(b2,"Peer Score: %05d",peer_score_final);
                 draw_text_center(ren,font,b1,6,dc);
                 draw_text_center(ren,font,b2,7,col_op);
 
