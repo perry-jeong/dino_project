@@ -49,24 +49,28 @@
 #define MAX_CLOUDS    5
 #define MAX_STARS    60
 
-/* ── F3: 점프 물리 상수 ───────────────────────────────────── */
-/* CD 에디션 jump_map 기준 재현: peak≈6행, 체공≈17틱                */
-/*   VY=1.5, g=0.18 → peak=1.5²/(2×0.18)≈6.25행, air≈17틱      */
-#define JUMP_VY_INIT   1.5f
-#define GRAVITY        0.18f
-#define MAX_FALL       10.0f
-#define MAX_HEIGHT     8       /* 화면 밖 점프 방지 상한 (rows) */
-#define COYOTE_MS      80
-#define MAX_AIR_JUMPS   1
+/* ── F3: 점프 물리 상수 (시간 기준 — tick속도 영향 없음) ── */
+/* vy 단위: rows/sec, 각 틱에서 dt = tick_interval/1000 을 사용해 Euler 적분 */
+/* peak = VY²/(2*G) ≈6행, air = 2*VY/G ≈0.83초 (틱 속도와 무관)            */
+#define JUMP_VY_SEC   30.0f   /* rows/sec 점프 초기 속도 */
+#define GRAVITY_SEC   72.0f   /* rows/sec² 중력 */
+#define MAX_FALL_SEC 200.0f   /* rows/sec 최대 낙하 속도 */
+#define MAX_HEIGHT     8      /* 화면 밖 점프 방지 상한 (rows) */
+#define COYOTE_MS     80
+#define MAX_AIR_JUMPS  1
+
 
 
 /* ── F1: 아이템 ─────────────────────────────────────── */
 #define ITEM_CLEARS    5
 #define ITEM_MAX       3
 
-/* ── F2: 낮/밤 (DN_PHASE_MS 기준, score*10 도입하면 1000점마다 1페이즈) ── */
-#define DN_PHASE_MS   10000
-#define DN_PHASES          3   /* 0=낮 1=저녁 2=밤 */
+/* ── F2: 낮/밤 주기 (score 단위, elapsed_ms = score*10 으로 전달) ── */
+/* 주기 = 2500 score: 낮1000 → 전환250 → 밤1000 → 전환250 → 반복 */
+#define DN_CYCLE_MS   25000   /* 2500 score * 10 */
+#define DN_DAY_MS     10000   /* 낮 유지 (1000 score) */
+#define DN_TRANS_MS    2500   /* 전환 구간 (250 score) */
+#define DN_NIGHT_MS   10000   /* 밤 유지 (1000 score) */
 
 /* ── 레벨 계산 ─────────────────────────────────────── */
 static inline int calc_level(int ti) {
@@ -78,14 +82,14 @@ static inline int calc_level(int ti) {
 
 /* ══ 구조체 ════════════════════════════════════════════ */
 
-/* B1: score = 장애물 통과 횟수; F1: attack_item 추가 */
+/* B1: score = 생존 시간 (100ms 단위); F1: attack_item 추가 */
 typedef struct {
     int is_ready;
     int dino_y;
     int is_ducking;
     int obs_x;
     int obs_type;
-    int score;       /* 장애물 통과 횟수 */
+    int score;       /* 생존 시간 (100ms 단위, 일시정지 제외) */
     int is_dead;
     int attack_item; /* 0=없음 1=공격 발동 */
 } Packet;
@@ -100,13 +104,6 @@ typedef struct {
     int   air_jumps_left;  /* 남은 공중 점프 횟수 */
     long long last_ground_ms;
 } PhysState;
-
-/* F2: 낮/밤 상태 */
-typedef struct {
-    Uint32 game_start_ms;
-} DayNight;
-
-
 
 typedef struct { float x; int y_row, w; float base_speed; } Cloud;
 
@@ -180,26 +177,26 @@ void phys_init(PhysState *p) {
 }
 
 void phys_jump(PhysState *p, long long now_ms) {
+    /* vy 단위: rows/sec — tick 속도와 무관하게 항상 동일한 점프 높이 */
     if (p->on_ground || (now_ms - p->last_ground_ms < COYOTE_MS)) {
-        p->vy = JUMP_VY_INIT;
+        p->vy = JUMP_VY_SEC;
         p->on_ground = 0;
         p->air_jumps_left = MAX_AIR_JUMPS;
     } else if (p->air_jumps_left > 0) {
-        p->vy = JUMP_VY_INIT * 0.82f;
+        p->vy = JUMP_VY_SEC * 0.82f;
         p->air_jumps_left--;
     }
 }
 
-/* 1 tick 마다 호출 */
-void phys_update(PhysState *p, long long now_ms) {
+/* 1 tick 마다 호출: dt = tick_interval_ms / 1000.0f */
+void phys_update(PhysState *p, long long now_ms, float dt) {
     if (p->on_ground) return;
-    p->vy -= GRAVITY;
-    if (p->vy < -MAX_FALL) p->vy = -MAX_FALL;
-    p->height += p->vy;
-    /* 화면 밖 점프 방지: 상한 클램핑 */
+    p->vy -= GRAVITY_SEC * dt;             /* Euler 적분 */
+    if (p->vy < -MAX_FALL_SEC) p->vy = -MAX_FALL_SEC;
+    p->height += p->vy * dt;
     if (p->height > (float)MAX_HEIGHT) {
         p->height = (float)MAX_HEIGHT;
-        p->vy = 0.0f;  /* 천장에 닿는 순간 속도 제거 */
+        p->vy = 0.0f;
     }
     if (p->height <= 0.0f) {
         p->height = 0.0f; p->vy = 0.0f;
@@ -226,18 +223,38 @@ RGB3 rgb_lerp(RGB3 a, RGB3 b, float t) {
     return r;
 }
 
-/* phase: 0=낮 1=저녁 2=밤, t: 0.0~1.0 (다음 페이즈 보간) */
+/* F2: 낮/밤 색상 + night_a 계산
+ *   주기 2500 score: 낮(1000) → 전환(250) → 밤(1000) → 전환(250) → 반복
+ *   elapsed_ms = score * 10 으로 전달 */
 void dn_get_colors(Uint32 elapsed_ms,
-                   RGB3 *bg, RGB3 *ground, RGB3 *dino_col) {
-    int phase = (int)((elapsed_ms / DN_PHASE_MS) % DN_PHASES);
-    int next  = (phase + 1) % DN_PHASES;
-    float t   = (float)(elapsed_ms % DN_PHASE_MS) / (float)DN_PHASE_MS;
-    /* 앞 80%는 유지, 뒤 20%에서 보간 */
-    float blend = (t < 0.8f) ? 0.0f : (t - 0.8f) / 0.2f;
-    *bg      = rgb_lerp(dn_bg[phase],     dn_bg[next],     blend);
-    *ground  = rgb_lerp(dn_ground[phase], dn_ground[next], blend);
-    *dino_col= rgb_lerp(dn_dino[phase],   dn_dino[next],   blend);
+                   RGB3 *bg, RGB3 *ground, RGB3 *dino_col, float *night_a) {
+    Uint32 pos = elapsed_ms % DN_CYCLE_MS;
+    static const Uint32 T1 = DN_DAY_MS;                            /* 10000 */
+    static const Uint32 T2 = DN_DAY_MS + DN_TRANS_MS;              /* 12500 */
+    static const Uint32 T3 = DN_DAY_MS + DN_TRANS_MS + DN_NIGHT_MS;/* 22500 */
+
+    float blend = 0.0f;
+    int fi = 0, ti = 0;
+    float na = 0.0f;
+
+    if (pos < T1) {
+        fi=0; ti=0; blend=0.0f; na=0.0f;          /* 낮 */
+    } else if (pos < T2) {
+        blend=(float)(pos-T1)/(float)DN_TRANS_MS;
+        fi=0; ti=2; na=blend;                       /* 낮→밤 전환 */
+    } else if (pos < T3) {
+        fi=2; ti=2; blend=0.0f; na=1.0f;           /* 밤 */
+    } else {
+        blend=(float)(pos-T3)/(float)DN_TRANS_MS;
+        fi=2; ti=0; na=1.0f-blend;                 /* 밤→낮 전환 */
+    }
+
+    *bg      = rgb_lerp(dn_bg[fi],     dn_bg[ti],     blend);
+    *ground  = rgb_lerp(dn_ground[fi], dn_ground[ti], blend);
+    *dino_col= rgb_lerp(dn_dino[fi],   dn_dino[ti],   blend);
+    *night_a = na;
 }
+
 
 /* ══ 구름 / 별 초기화 ════════════════════════════════════ */
 
@@ -510,13 +527,11 @@ int main(int argc, char *argv[]) {
             }
             if (peer_disconnected) break;
 
-            /* 낮/밤 배경 */
+            /* 낮/밤 배경 (대기실: 시간 기반) */
             Uint32 elapsed=SDL_GetTicks()-dn_start;
             RGB3 bg_c, gr_c, dc_c;
-            dn_get_colors(elapsed,&bg_c,&gr_c,&dc_c);
-            int phase_idx=(int)((elapsed/DN_PHASE_MS)%DN_PHASES);
-            float night_a=(phase_idx==2)?1.0f:(phase_idx==1&&(elapsed%DN_PHASE_MS)>DN_PHASE_MS*8/10)?
-                           (float)((elapsed%DN_PHASE_MS)-DN_PHASE_MS*8/10)/(DN_PHASE_MS*2/10):0.0f;
+            float night_a=0.0f;
+            dn_get_colors(elapsed,&bg_c,&gr_c,&dc_c,&night_a);
 
             SDL_SetRenderDrawColor(ren,bg_c.r,bg_c.g,bg_c.b,255);
             SDL_RenderClear(ren);
@@ -576,7 +591,8 @@ int main(int argc, char *argv[]) {
 
                 Uint32 elapsed=SDL_GetTicks()-dn_start;
                 RGB3 bg_c,gr_c,dc_c;
-                dn_get_colors(elapsed,&bg_c,&gr_c,&dc_c);
+                float night_a=0.0f;
+                dn_get_colors(elapsed,&bg_c,&gr_c,&dc_c,&night_a);
 
                 SDL_SetRenderDrawColor(ren,bg_c.r,bg_c.g,bg_c.b,255);
                 SDL_RenderClear(ren);
@@ -614,11 +630,12 @@ int main(int argc, char *argv[]) {
         int show_hitbox= 0;
         int paused     = 0;
 
-        /* B1: 점수 = 생존 시간 (100ms 단위, 죽는 순간 동결) */
+        /* B1: 점수 = 생존 시간 (100ms 단위, 일시정지 제외, 죽는 순간 동결) */
         int score      = 0;
         int my_score_final   = 0;
         int peer_score_final = 0;
-        long long game_start_ms = get_time_ms(); /* 생존 시간 기준점 */
+        long long game_start_ms  = get_time_ms(); /* 생존 시간 기준점 */
+        long long total_paused_ms = 0;            /* 누적 일시정지 시간 */
 
         /* F1: 공격 아이템 */
         int my_items         = 0;   /* 보유 아이템 수 */
@@ -657,8 +674,13 @@ int main(int argc, char *argv[]) {
                         /* B2: 일시정지 — pause_start 저장 */
                         if (e.key.keysym.sym==SDLK_p) {
                             paused=!paused;
-                            if (paused) pause_start=now;
-                            else        last_tick += (now-pause_start);
+                            if (paused) {
+                                pause_start=now;
+                            } else {
+                                long long pd = now - pause_start;
+                                last_tick       += pd; /* 틱 타이머 보정 */
+                                total_paused_ms += pd; /* 점수에서 제외할 시간 누적 */
+                            }
                         }
                         /* F1: 아이템 사용 */
                         if (e.key.keysym.sym==SDLK_a && my_items>0 && !paused) {
@@ -680,16 +702,19 @@ int main(int argc, char *argv[]) {
                 is_ducking=(phy.on_ground && now-last_duck<300)?1:0;
             }
 
+            /* 전프렌임 my_y_int 계산: 틱 바락 + 네트워크 송신 공통사용 */
+            int my_y_int = DINO_BASE - (int)phy.height;
+
             /* ── 게임 틱 ── */
             if (!paused && now-last_tick>=tick_interval) {
                 last_tick=now;
 
                 if (!my_dead) {
                     /* B2: 일시정지 중 점프 물리 동결 — 틱 안에서만 업데이트 */
-                    phys_update(&phy, now);
+                    phys_update(&phy, now, (float)tick_interval / 1000.0f);
 
-                    /* B1: 생존 시간을 점수로 사용 (100ms 단위) */
-                    score = (int)((now - game_start_ms) / 100);
+                    /* B1: 생존 시간 = (경과 시간 - 일시정지 시간) / 100ms */
+                    score = (int)((now - game_start_ms - total_paused_ms) / 100);
 
                     obs_x--;
                     int obs_w=(obs_type==2)?5:(obs_type==3)?7:
@@ -710,14 +735,13 @@ int main(int argc, char *argv[]) {
                     }
 
                     /* 충돌 판정 */
-                    int my_y_int = DINO_BASE - (int)phy.height;
-                    int eff_y    = MY_BASE_Y + (my_y_int - DINO_BASE);
+                    int eff_y = MY_BASE_Y + (my_y_int - DINO_BASE);
                     if (hitbox_overlap(dino_hitbox(eff_y,is_ducking),
                                        obs_hitbox(obs_x,obs_type,MY_BASE_Y))) {
                         my_dead=1;
                     }
+                    my_score_final=score; /* 사망 시점의 점수 동결 */
                 }
-                my_score_final=score;
 
                 /* 알림 타이머 감소 */
                 if (recv_attack_ticks>0) recv_attack_ticks--;
@@ -725,7 +749,6 @@ int main(int argc, char *argv[]) {
             }
 
             /* ── 네트워크 송수신 ── */
-            int my_y_int = DINO_BASE - (int)phy.height;
             Packet md={1,my_y_int,is_ducking,obs_x,obs_type,
                        score,my_dead,send_attack};
             send(sock,&md,sizeof(md),0);
@@ -739,8 +762,8 @@ int main(int argc, char *argv[]) {
             }
             peer_score_final=peer.score;
 
-            /* F1: 공격 받으면 플래그 설정 */
-            if (peer.attack_item==1 && !my_dead) {
+            /* F1: 공격 받으면 플래그 설정 (recv_attack_ticks==0 가드로 중복 방지) */
+            if (peer.attack_item==1 && !my_dead && recv_attack_ticks==0) {
                 forced_obs=1;
                 recv_attack_ticks=90;
             }
@@ -752,15 +775,11 @@ int main(int argc, char *argv[]) {
             Uint32 ms_now   = SDL_GetTicks();
             int global_tick = (int)(ms_now / tick_interval);
 
-            /* F2: 낮/밤 색상 — 점수 1000점마다 1페이즈 전환 (score*10 = ms 환산) */
+            /* F2: 낮/밤 색상 — score 1000점마다 낮↔밤, 전환은 250점 구간 */
             Uint32 elapsed = (Uint32)(score * 10);
             RGB3 bg_c, gr_c, dc_c;
-            dn_get_colors(elapsed,&bg_c,&gr_c,&dc_c);
-            int phase_idx=(int)((elapsed/DN_PHASE_MS)%DN_PHASES);
-            float night_a=(phase_idx==2)?1.0f:
-                          (phase_idx==1&&(elapsed%DN_PHASE_MS)>DN_PHASE_MS*8/10)?
-                          (float)((elapsed%DN_PHASE_MS)-DN_PHASE_MS*8/10)/
-                          (float)(DN_PHASE_MS*2/10):0.0f;
+            float night_a = 0.0f;
+            dn_get_colors(elapsed,&bg_c,&gr_c,&dc_c,&night_a);
 
             SDL_SetRenderDrawColor(ren,bg_c.r,bg_c.g,bg_c.b,255);
             SDL_RenderClear(ren);
@@ -809,7 +828,9 @@ int main(int argc, char *argv[]) {
 
             /* 히트박스 디버그 */
             if (show_hitbox) {
-                int ey=MY_BASE_Y+(DINO_BASE-(int)phy.height-DINO_BASE);
+                /* 충돌 판정과 동일한 eff_y 계산 */
+                int hb_y_int = DINO_BASE - (int)phy.height;
+                int ey = MY_BASE_Y + (hb_y_int - DINO_BASE);
                 HitBox dh2=dino_hitbox(ey,is_ducking);
                 SDL_SetRenderDrawColor(ren,255,0,0,180);
                 SDL_Rect dr={dh2.left*CELL_W,dh2.top*CELL_H,
@@ -909,7 +930,9 @@ int main(int argc, char *argv[]) {
             /* F2: 게임오버 화면에서도 마지막 점수 기준 유지 */
             Uint32 elapsed = (Uint32)(my_score_final * 10);
             RGB3 bg_c,gr_c,dc_c;
-            dn_get_colors(elapsed,&bg_c,&gr_c,&dc_c);
+            float night_a=0.0f;
+            dn_get_colors(elapsed,&bg_c,&gr_c,&dc_c,&night_a);
+
 
             SDL_SetRenderDrawColor(ren,bg_c.r,bg_c.g,bg_c.b,255);
             SDL_RenderClear(ren);
@@ -930,10 +953,10 @@ int main(int argc, char *argv[]) {
                 draw_text_center(ren,font,b1,6,dc);
                 draw_text_center(ren,font,b2,7,col_op);
 
-                char bs[80]; sprintf(bs,"Best This Session: %03d",best_score);
+                char bs[80]; sprintf(bs,"Best This Session: %05d",best_score);
                 draw_text_center(ren,font,bs,8,(SDL_Color){100,100,200,255});
 
-                /* 승패 판정 (B1: 장애물 통과 횟수 비교) */
+                /* 승패 판정 (B1: 생존 시간 비교 — 더 오래 산 플레이어가 승리) */
                 if (my_score_final>peer_score_final)
                     draw_text_center_hl(ren,font_large,">> YOU WIN! <<",11,
                                         (SDL_Color){30,160,30,255},col_green);
