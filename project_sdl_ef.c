@@ -542,23 +542,22 @@ int main(int argc, char *argv[]) {
                         (SDL_GetTicks()/200)%2,2,0.0f,dc);
 
             if (font_large)
-                draw_text_center(ren,font_large,"MULTI-DINO RUN",1,col_gray);
+                draw_text_center(ren,font_large,"MULTI-DINO RUN",2,col_gray);
             if (font) {
                 if (best_score>0){
                     char bs[64]; sprintf(bs,"Best: %05d",best_score);
-                    draw_text_center(ren,font,bs,4,col_gray);
+                    draw_text_center(ren,font,bs,5,col_gray);
                 }
-                int blink=(SDL_GetTicks()/500)%2;
-                if (my_ready)
-                    draw_text_center(ren,font,"READY!",6,col_gray);
-                else if (blink)
-                    draw_text_center(ren,font,"> PRESS [SPACE] TO READY <",6,col_gray);
+                /* 플레이어 상태 */
                 char lb[80];
-                sprintf(lb,"%s: %s",my_label,my_ready?"READY":"waiting...");
+                sprintf(lb,"%s  %s",my_label,my_ready?"[ READY ]":"[ waiting... ]");
                 draw_text_center(ren,font,lb,8,col_gray);
-                sprintf(lb,"%s: %s",peer_label,peer.is_ready?"READY!":"waiting...");
-                draw_text_center(ren,font,lb,9,col_op);
-                draw_text_center(ren,font,"[A]: 공격 아이템  [P]: 일시정지  [H]: 히트박스",11,col_gray);
+                sprintf(lb,"%s  %s",peer_label,peer.is_ready?"[ READY ]":"[ waiting... ]");
+                draw_text_center(ren,font,lb,10,col_op);
+
+                /* SPACE 안내 (깜빡임) */
+                if (!my_ready && (SDL_GetTicks()/600)%2)
+                    draw_text_center(ren,font,"PRESS  SPACE  TO  START",13,col_gray);
             }
 
             SDL_RenderPresent(ren);
