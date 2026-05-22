@@ -51,9 +51,9 @@
 
 /* ── F3: 점프 물리 상수 (시간 기준 — tick속도 영향 없음) ── */
 /* vy 단위: rows/sec, 각 틱에서 dt = tick_interval/1000 을 사용해 Euler 적분 */
-/* peak = VY²/(2*G) ≈8행, air = 2*VY/G ≈1.30초 (틱 속도와 무관)            */
+/* peak = VY²/(2*G) ≈6.5행, air = 2*VY/G = 1.00초 (틱 속도와 무관)          */
 #define JUMP_VY_SEC   26.0f   /* rows/sec 점프 초기 속도 */
-#define GRAVITY_SEC   40.0f   /* rows/sec² 중력 */
+#define GRAVITY_SEC   52.0f   /* rows/sec² 중력 (VY/G=0.5 → 완벽 대칭 포물선) */
 #define MAX_FALL_SEC 200.0f   /* rows/sec 최대 낙하 속도 */
 #define MAX_HEIGHT     8      /* 화면 밖 점프 방지 상한 (rows) */
 
