@@ -277,10 +277,14 @@ static int set_nonblocking(int fd) {
 }
 
 /*
- * getifaddrs()로 루프백(127.x)을 제외한 첫 번째 IPv4 주소를 반환한다.
- * 실패하면 UDP connect 트릭을 fallback으로 시도한다.
+ * IP 탐색 우선순위:
+ *  1) getifaddrs()  — 인터페이스 직접 열거 (루프백 제외)
+ *  2) hostname -I   — 쉘 명령 (VMware/Docker 등 특수 환경 대응)
+ *  3) UDP connect   — 라우팅 테이블 이용 (인터넷 연결 필요)
  */
 static void get_local_ip(char *buf, size_t size) {
+    buf[0] = '\0';
+
     /* ── 방법 1: getifaddrs() 인터페이스 열거 ─────────────── */
     struct ifaddrs *ifaddr = NULL;
     if (getifaddrs(&ifaddr) == 0) {
@@ -290,7 +294,8 @@ static void get_local_ip(char *buf, size_t size) {
             struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
             char tmp[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &sa->sin_addr, tmp, sizeof(tmp));
-            if (strncmp(tmp, "127.", 4) == 0) continue;  /* 루프백 제외 */
+            if (strncmp(tmp, "127.", 4) == 0) continue;   /* 루프백 제외 */
+            if (strcmp(tmp, "0.0.0.0") == 0) continue;    /* 미할당 제외 */
             strncpy(buf, tmp, size - 1);
             buf[size - 1] = '\0';
             freeifaddrs(ifaddr);
@@ -299,7 +304,29 @@ static void get_local_ip(char *buf, size_t size) {
         freeifaddrs(ifaddr);
     }
 
-    /* ── 방법 2: UDP connect 트릭 (fallback) ──────────────── */
+    /* ── 방법 2: hostname -I 쉘 명령 (VMware/Ubuntu 등 대응) ─ */
+    FILE *fp = popen("hostname -I 2>/dev/null", "r");
+    if (fp) {
+        char line[256] = {0};
+        if (fgets(line, sizeof(line), fp)) {
+            /* 공백·개행으로 구분된 첫 번째 IP만 사용 */
+            char *sp = line;
+            while (*sp == ' ') sp++;               /* 앞 공백 건너뜀 */
+            char *end = sp;
+            while (*end && *end != ' ' && *end != '\n') end++;
+            *end = '\0';
+            if (strlen(sp) > 0 && strncmp(sp, "127.", 4) != 0
+                                && strcmp(sp, "0.0.0.0") != 0) {
+                strncpy(buf, sp, size - 1);
+                buf[size - 1] = '\0';
+                pclose(fp);
+                return;
+            }
+        }
+        pclose(fp);
+    }
+
+    /* ── 방법 3: UDP connect 트릭 (인터넷 연결 시 fallback) ── */
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock >= 0) {
         struct sockaddr_in addr;
@@ -318,7 +345,8 @@ static void get_local_ip(char *buf, size_t size) {
         close(sock);
     }
 
-    strncpy(buf, "알 수 없음", size - 1);
+    /* 최후 수단: 루프백 주소 반환 (같은 PC 내 테스트용) */
+    strncpy(buf, "127.0.0.1", size - 1);
     buf[size - 1] = '\0';
 }
 
@@ -1265,14 +1293,24 @@ static int host_wait(App *app, NetLink *net, int *quit) {
         render_menu_background(app, 500);
         draw_text_center(app->ren, app->font_large, "WAITING FOR PLAYER", 145,
                          (SDL_Color){45,55,70,255});
-        /* 실제 LAN IP 표시 */
-        draw_filled(app->ren, 190, 265, WIN_W - 380, 68, (SDL_Color){255,255,255,230});
-        draw_outline(app->ren, 190, 265, WIN_W - 380, 68, (SDL_Color){65,100,145,255});
-        draw_text_center(app->ren, app->font, ip_line, 282,
+        /* LAN IP 표시 박스 */
+        draw_filled(app->ren, 190, 255, WIN_W - 380, 68, (SDL_Color){255,255,255,230});
+        draw_outline(app->ren, 190, 255, WIN_W - 380, 68, (SDL_Color){65,100,145,255});
+        draw_text_center(app->ren, app->font, ip_line, 272,
                          (SDL_Color){35,100,175,255});
-        draw_text_center(app->ren, app->font_small,
-                         "상대방은 JOIN 을 선택하고 위 IP 를 입력하세요.", 358,
-                         (SDL_Color){75,85,100,255});
+        /* 루프백이면 VMware 네트워크 안내, 아니면 정상 접속 안내 */
+        if (strncmp(local_ip, "127.", 4) == 0) {
+            draw_text_center(app->ren, app->font_small,
+                             "네트워크 미설정 - 같은 PC 안에서만 접속 가능합니다.", 336,
+                             (SDL_Color){200,100,30,255});
+            draw_text_center(app->ren, app->font_small,
+                             "VMware: 설정 > 네트워크 어댑터 > Bridged 또는 NAT 로 변경", 362,
+                             (SDL_Color){140,90,50,255});
+        } else {
+            draw_text_center(app->ren, app->font_small,
+                             "상대방은 JOIN 을 선택하고 위 IP 를 입력하세요.", 348,
+                             (SDL_Color){75,85,100,255});
+        }
         draw_text_center(app->ren, app->font_small, "ESC : CANCEL", 420,
                          (SDL_Color){75,85,100,255});
         SDL_RenderPresent(app->ren);
