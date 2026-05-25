@@ -47,6 +47,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#include <ifaddrs.h>
 
 /* ── 화면/레이아웃 ───────────────────────────────────────── */
 #define WIDTH              80
@@ -275,25 +276,50 @@ static int set_nonblocking(int fd) {
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-/* UDP 소켓 트릭으로 외부 연결에 사용될 LAN IP를 얻는다 (패킷 전송 없음). */
+/*
+ * getifaddrs()로 루프백(127.x)을 제외한 첫 번째 IPv4 주소를 반환한다.
+ * 실패하면 UDP connect 트릭을 fallback으로 시도한다.
+ */
 static void get_local_ip(char *buf, size_t size) {
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) { strncpy(buf, "알 수 없음", size); return; }
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(80);
-    inet_pton(AF_INET, "8.8.8.8", &addr.sin_addr);
-    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(sock);
-        strncpy(buf, "알 수 없음", size);
-        return;
+    /* ── 방법 1: getifaddrs() 인터페이스 열거 ─────────────── */
+    struct ifaddrs *ifaddr = NULL;
+    if (getifaddrs(&ifaddr) == 0) {
+        for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_addr) continue;
+            if (ifa->ifa_addr->sa_family != AF_INET) continue;
+            struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
+            char tmp[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &sa->sin_addr, tmp, sizeof(tmp));
+            if (strncmp(tmp, "127.", 4) == 0) continue;  /* 루프백 제외 */
+            strncpy(buf, tmp, size - 1);
+            buf[size - 1] = '\0';
+            freeifaddrs(ifaddr);
+            return;
+        }
+        freeifaddrs(ifaddr);
     }
-    struct sockaddr_in local;
-    socklen_t len = sizeof(local);
-    getsockname(sock, (struct sockaddr *)&local, &len);
-    close(sock);
-    inet_ntop(AF_INET, &local.sin_addr, buf, (socklen_t)size);
+
+    /* ── 방법 2: UDP connect 트릭 (fallback) ──────────────── */
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock >= 0) {
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port   = htons(80);
+        inet_pton(AF_INET, "8.8.8.8", &addr.sin_addr);
+        if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            struct sockaddr_in local;
+            socklen_t len = sizeof(local);
+            getsockname(sock, (struct sockaddr *)&local, &len);
+            inet_ntop(AF_INET, &local.sin_addr, buf, (socklen_t)size);
+            close(sock);
+            return;
+        }
+        close(sock);
+    }
+
+    strncpy(buf, "알 수 없음", size - 1);
+    buf[size - 1] = '\0';
 }
 
 static const char *result_name(ResultType r) {
